@@ -96,3 +96,90 @@ void saveToSD(const MeteoData& data) {
   file.close();
   Serial.println("Saved to SD");
 }
+
+static bool isCsvFileName(const String& name) {
+  return name.endsWith(".csv");
+}
+
+String getCsvFileListJson() {
+  String json = "[";
+  bool first = true;
+
+  File root = SD.open("/");
+  if (!root) {
+    return "[]";
+  }
+
+  while (true) {
+    File entry = root.openNextFile();
+    if (!entry) {
+      break;
+    }
+
+    if (!entry.isDirectory()) {
+      String name = String(entry.name());
+
+      if (!name.startsWith("/")) {
+        name = "/" + name;
+      }
+
+      if (isCsvFileName(name)) {
+        if (!first) {
+          json += ",";
+        }
+
+        json += "{";
+        json += "\"name\":\"" + name + "\",";
+        json += "\"is_current\":";
+        json += (name == currentLogFileName) ? "true" : "false";
+        json += "}";
+
+        first = false;
+      }
+    }
+
+    entry.close();
+  }
+
+  root.close();
+  json += "]";
+  return json;
+}
+
+bool deleteCsvFile(const String& fileName) {
+  if (fileName == "") {
+    return false;
+  }
+
+  String normalized = fileName;
+  if (!normalized.startsWith("/")) {
+    normalized = "/" + normalized;
+  }
+
+  if (normalized == currentLogFileName) {
+    Serial.println("ERROR: Attempt to delete current log file");
+    return false;
+  }
+
+  if (!normalized.endsWith(".csv")) {
+    Serial.println("ERROR: Only CSV files can be deleted");
+    return false;
+  }
+
+  if (!SD.exists(normalized)) {
+    Serial.println("ERROR: File does not exist");
+    return false;
+  }
+
+  bool ok = SD.remove(normalized);
+
+  if (ok) {
+    Serial.print("Deleted file: ");
+    Serial.println(normalized);
+  } else {
+    Serial.print("ERROR: Failed to delete file: ");
+    Serial.println(normalized);
+  }
+
+  return ok;
+}

@@ -37,6 +37,11 @@ void addHistoryPoint(const MeteoData& data) {
   totalPointIndex++;
 }
 
+static String getMimeType(const String& path) {
+  if (path.endsWith(".csv")) return "text/csv";
+  return "application/octet-stream";
+}
+
 static String buildHTML() {
   String html = R"rawliteral(
 <!DOCTYPE html>
@@ -95,6 +100,17 @@ static String buildHTML() {
       border-radius: 8px;
       font-size: 16px;
       margin-top: 10px;
+      margin-right: 8px;
+      border: none;
+      cursor: pointer;
+    }
+
+    .btn-danger {
+      background: #cc3333;
+    }
+
+    .btn-secondary {
+      background: #666;
     }
 
     canvas {
@@ -106,6 +122,42 @@ static String buildHTML() {
       background: #fff;
       display: block;
       margin-top: 12px;
+    }
+
+    .file-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+      flex-wrap: wrap;
+    }
+
+    .file-row:last-child {
+      border-bottom: none;
+    }
+
+    .file-name {
+      font-size: 15px;
+      word-break: break-all;
+    }
+
+    .file-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #e6f4ea;
+      color: #1e7a34;
+      margin-left: 8px;
+      font-weight: bold;
     }
   </style>
 </head>
@@ -131,7 +183,12 @@ static String buildHTML() {
   <div class="card">
     <div class="value">Current CSV log file:</div>
     <div class="small" id="logFileName">loading...</div>
-    <a class="btn" href="/download">Download CSV</a>
+    <a class="btn" href="/download">Download current CSV</a>
+  </div>
+
+  <div class="card">
+    <div class="value">All CSV files</div>
+    <div id="fileList" class="small">Loading file list...</div>
   </div>
 
   <div class="card">
@@ -221,6 +278,80 @@ static String buildHTML() {
       ctx.stroke();
     }
 
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    async function loadFileList() {
+      try {
+        const response = await fetch('/files');
+        const files = await response.json();
+
+        const container = document.getElementById('fileList');
+
+        if (!files || files.length === 0) {
+          container.innerHTML = 'No CSV files found.';
+          return;
+        }
+
+        let html = '';
+
+        for (const file of files) {
+          const safeName = escapeHtml(file.name);
+
+          html += `<div class="file-row">`;
+          html += `<div class="file-name">${safeName}`;
+
+          if (file.is_current) {
+            html += `<span class="badge">CURRENT</span>`;
+          }
+
+          html += `</div>`;
+          html += `<div class="file-actions">`;
+          html += `<a class="btn btn-secondary" href="/download?file=${encodeURIComponent(file.name)}">Download</a>`;
+
+          if (!file.is_current) {
+            html += `<button class="btn btn-danger" onclick="deleteFile('${file.name.replaceAll("'", "\\'")}')">Delete</button>`;
+          }
+
+          html += `</div>`;
+          html += `</div>`;
+        }
+
+        container.innerHTML = html;
+      } catch (e) {
+        document.getElementById('fileList').textContent = 'Failed to load file list.';
+        console.log('File list error:', e);
+      }
+    }
+
+    async function deleteFile(fileName) {
+      const confirmed = confirm(`Delete file ${fileName}?`);
+      if (!confirmed) return;
+
+      try {
+        const response = await fetch('/delete?file=' + encodeURIComponent(fileName), {
+          method: 'POST'
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          await loadFileList();
+        } else {
+          alert('Delete failed: ' + (result.message || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Delete request failed');
+        console.log('Delete error:', e);
+      }
+    }
+
     async function updateData() {
       try {
         const response = await fetch('/data');
@@ -250,7 +381,10 @@ static String buildHTML() {
     }
 
     updateData();
+    loadFileList();
+
     setInterval(updateData, 2000);
+    setInterval(loadFileList, 5000);
   </script>
 </body>
 </html>
@@ -264,11 +398,21 @@ static void handleRoot() {
 }
 
 static void handleDownload() {
-  String fileName = getCurrentLogFileName();
+  String fileName;
+
+  if (server.hasArg("file")) {
+    fileName = server.arg("file");
+  } else {
+    fileName = getCurrentLogFileName();
+  }
 
   if (fileName == "") {
     server.send(500, "text/plain", "No log file available");
     return;
+  }
+
+  if (!fileName.startsWith("/")) {
+    fileName = "/" + fileName;
   }
 
   File file = SD.open(fileName, FILE_READ);
@@ -282,10 +426,34 @@ static void handleDownload() {
     downloadName.remove(0, 1);
   }
 
-  server.sendHeader("Content-Type", "text/csv");
+  server.sendHeader("Content-Type", getMimeType(fileName));
   server.sendHeader("Content-Disposition", "attachment; filename=\"" + downloadName + "\"");
-  server.streamFile(file, "text/csv");
+  server.streamFile(file, getMimeType(fileName));
   file.close();
+}
+
+static void handleFiles() {
+  String json = getCsvFileListJson();
+  server.send(200, "application/json; charset=utf-8", json);
+}
+
+static void handleDelete() {
+  if (!server.hasArg("file")) {
+    server.send(400, "application/json; charset=utf-8",
+                "{\"success\":false,\"message\":\"Missing file parameter\"}");
+    return;
+  }
+
+  String fileName = server.arg("file");
+  bool ok = deleteCsvFile(fileName);
+
+  if (ok) {
+    server.send(200, "application/json; charset=utf-8",
+                "{\"success\":true,\"message\":\"File deleted\"}");
+  } else {
+    server.send(400, "application/json; charset=utf-8",
+                "{\"success\":false,\"message\":\"Delete failed\"}");
+  }
 }
 
 static void handleData() {
@@ -362,6 +530,9 @@ bool initWebUI(MeteoData* dataPtr) {
   server.on("/", handleRoot);
   server.on("/data", handleData);
   server.on("/download", HTTP_GET, handleDownload);
+  server.on("/files", HTTP_GET, handleFiles);
+  server.on("/delete", HTTP_POST, handleDelete);
+
   server.begin();
 
   Serial.println("Web server started");

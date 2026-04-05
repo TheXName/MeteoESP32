@@ -8,4 +8,7 @@ bool initStorage();
 void saveToSD(const MeteoData& data);
 String getCurrentLogFileName();
 
+String getCsvFileListJson();
+bool deleteCsvFile(const String& fileName);
+
 #endif
