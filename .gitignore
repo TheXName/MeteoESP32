@@ -1,0 +1,8 @@
+*.bin
+*.elf
+*.hex
+*.o
+*.log
+build/
+.vscode/
+.DS_Store
